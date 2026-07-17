@@ -81,7 +81,7 @@ kubectl get nodepool 2>/dev/null || true
 
 ### 3. 部署 nginx 应用验证自动节点创建和 NLB
 
-> ⚠️ **已验证：** 原示例 Service 无任何 `service.beta.kubernetes.io/aws-load-balancer-*` 注解。实测发现 EKS Auto Mode 内置 NLB 控制器（`loadBalancerClass: eks.amazonaws.com/nlb`）在未显式声明 scheme 时，默认创建 `internal`（私有）NLB，`aws elbv2 describe-load-balancers` 确认 `Scheme=internal`，其 DNS 解析出的是集群 VPC 内的私有 IP（如 `192.168.x.x`），从集群 VPC 外部（例如另一个 VPC 里的运维终端）`curl` 会一直超时（`HTTP Status: 000`），并非"约 30 秒 DNS 传播"能解决的问题。已在 Service 上补充 `service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing` 注解，NLB 控制器会重建为 `internet-facing` 且能正确解析出公网可达的地址（该注解为社区版 AWS Load Balancer Controller 沿用的命名空间，Auto Mode 内置控制器同样识别）。若确实只需要集群内/同 VPC 访问，可以保留默认的 `internal`，但需在验证步骤 4 里改用 VPC 内主机测试，而不是外部终端。
+> ⚠️ **注意：** EKS Auto Mode 内置 NLB 控制器默认建 `internal`（私有）NLB，从集群 VPC 外部访问会一直超时，不是 DNS 传播延迟的问题。需在 Service 上加注解 `service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing` 才能建出公网可达的 NLB；若只需集群内/同 VPC 访问，可保留默认的 `internal`，但验证步骤 4 要改用 VPC 内主机测试。
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -155,7 +155,7 @@ curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" --max-time 10 http://${NLB
 
 ### 5. 创建自定义 Spot NodePool
 
-> ⚠️ **已验证：** 原示例 `apiVersion: karpenter.k8s.aws/v1` 错误。实际在集群中 `kubectl api-resources` 确认 NodePool 的 CRD 是 `nodepools  karpenter.sh/v1  NodePool`，用 `karpenter.k8s.aws/v1` 会报错 `no matches for kind "NodePool" in version "karpenter.k8s.aws/v1"`。另外 EKS Auto Mode 节点上的实例族标签实际是 `eks.amazonaws.com/instance-family`（EKS 自有标签域，已用 `kubectl get node -o json` 验证），而不是社区版 Karpenter AWS Provider 使用的 `karpenter.k8s.aws/instance-family`（Auto Mode 节点上不存在该标签，用它做 requirement 会导致 NodePool 无法匹配到任何节点）。已同步修正为实际生效的 group/label。
+> ⚠️ **注意：** NodePool 的 CRD 是 `karpenter.sh/v1`，不是 `karpenter.k8s.aws/v1`（后者会报 `no matches for kind`）。EKS Auto Mode 节点的实例族标签是 `eks.amazonaws.com/instance-family`，不是社区版 Karpenter 用的 `karpenter.k8s.aws/instance-family`（Auto Mode 节点上不存在该标签，会导致 NodePool 匹配不到节点）。下方已用正确的 group/label。
 
 ```bash
 kubectl apply -f - <<'EOF'

@@ -65,22 +65,22 @@ For custom policies, create a customer-managed policy first and attach it to the
 
 ## IRSA vs Pod Identity Credential Providers
 
-Some managed services (notably **EMR on EKS**) authenticate via **IRSA** (`AssumeRoleWithWebIdentity`, using `AWS_ROLE_ARN`/`AWS_WEB_IDENTITY_TOKEN_FILE`), not EKS Pod Identity, even on a cluster where Pod Identity is otherwise used for everything else. The two need different S3A/Hadoop credential provider configs — using the wrong one silently fails with **no credentials found at all**, not an access-denied error:
+**EMR on EKS** authenticates via **IRSA** (`AssumeRoleWithWebIdentity`), not EKS Pod Identity, even on a cluster where Pod Identity is used for everything else. The two need different S3A/Hadoop credential provider configs — using the wrong one fails with **no credentials found at all**, not access-denied:
 
 - Pod Identity workloads (reads `AWS_CONTAINER_CREDENTIALS_FULL_URI`): `fs.s3a.aws.credentials.provider = org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider`
 - IRSA workloads (EMR-on-EKS job roles): `fs.s3a.aws.credentials.provider` (or `spark.hadoop.fs.s3a.aws.credentials.provider` for Spark jobs) `= com.amazonaws.auth.WebIdentityTokenCredentialsProvider`
 
-The default hadoop-aws credential provider chain (`TemporaryAWSCredentialsProvider`/`SimpleAWSCredentialsProvider`/`EnvironmentVariableCredentialsProvider`/`IAMInstanceCredentialsProvider`) does **not** include a WebIdentityToken-aware provider — if a job authenticates via IRSA, it must be set explicitly or it fails with `NoAuthWithAWSException` (a "no credentials" error, easy to misdiagnose as an IAM/permissions or SDK-compatibility problem when it's really just a missing config line).
+The default hadoop-aws credential provider chain does **not** include a WebIdentityToken-aware provider. If a job authenticates via IRSA and this isn't set explicitly, it fails with `NoAuthWithAWSException` — a "no credentials" error that's easy to misdiagnose as an IAM/permissions or SDK-compatibility problem when it's really just a missing config line.
 
 ## Debugging Failed Managed-Service Jobs (EMR on EKS, etc.)
 
-Job-runner/driver pods for services like EMR on EKS get garbage-collected within seconds to tens of seconds after failure — `kubectl logs`/`kubectl describe` almost never catches the real error in time. Before diagnosing a failure as anything deeper than "didn't check the logs":
+Job-runner/driver pods for services like EMR on EKS get garbage-collected within seconds to tens of seconds after failure. `kubectl logs`/`kubectl describe` almost never catches the real error in time, so before diagnosing a failure as anything deeper than "didn't check the logs":
 - Attach CloudWatch logging on the first attempt (`configuration-overrides.monitoringConfiguration.cloudWatchMonitoringConfiguration`), which requires `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`, `logs:DescribeLogStreams`, `logs:DescribeLogGroups` on the job execution role.
 - Read `jobRun.stateDetails`/`failureReason` from `describe-job-run` first — it often reveals whether the failure happened before or after the stage you're trying to debug (e.g. DNS/scheduling failures vs. actual S3 access failures look completely different and must not be conflated).
 
 ## Don't Trust "Account-Level Restriction" Conclusions from a Congested Shared Cluster
 
-If a job fails repeatedly on the shared `demo` cluster while other concurrent labs/agents are also scaling node groups or contending for CNI IPs, do not conclude the root cause is an account-level SDK/security-baseline limitation until it has been reproduced on a **dedicated, single-purpose cluster with no concurrent activity**. Shared-cluster noise (node group scale conflicts, CNI IP exhaustion, control-plane connectivity blips) produces failures that look like deep application-layer or SDK-version issues but aren't — always retest in isolation before writing down a low-confidence root cause as a conclusion.
+If a job fails repeatedly on the shared `demo` cluster while other labs/agents are also scaling node groups or contending for CNI IPs, don't conclude the root cause is an account-level SDK/security-baseline limitation. That kind of shared-cluster noise produces failures that look like deep application issues but aren't — always retest on an isolated cluster before finalizing a low-confidence root cause.
 
 ## Execution Rules
 

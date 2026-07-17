@@ -210,7 +210,7 @@ kubectl logs daemonset/fluent-bit -n ${LOG_NS} --tail=20 | grep -v "^$" | head -
 
 **预期输出**：Fluent Bit DaemonSet Pod Running；日志中无持续 403 或 connection error。
 
-> **已验证：** 实测发现一个比 403/连接错误更隐蔽的问题——Fluent Bit 的 `es` output 插件默认会把 Kubernetes 标签原样写入 `kubernetes.labels.*`，但集群中同时存在带点的标签（如 `app.kubernetes.io/name`，会被 OpenSearch 动态 mapping 解析为嵌套 object 路径 `kubernetes.labels.app.kubernetes.io.name`，从而把 `kubernetes.labels.app` 隐式定为 object 类型）和不带点的普通标签（如业务 Pod 的 `app: log-generator`，试图把 `kubernetes.labels.app` 写成字符串）。两者字段类型冲突会导致该 Pod 的日志写入持续返回 `HTTP 200` 但 `_bulk` 响应体里单条文档 `status:400 mapper_parsing_exception`（外层 HTTP 状态码正常，必须打开 `Trace_Error On` 才能看到真实的文档级错误，仅看连接层日志会误判为网络/认证问题）。修复方法：在 `[OUTPUT]` 块中增加 `Replace_Dots On`（Fluent Bit ES 插件内置选项，将字段名中的点替换为下划线，避免隐式嵌套），并删除当天已经被污染 mapping 的索引（`DELETE /eks-<date>`）后重建。
+> **注意：** 带点的 Kubernetes 标签（如 `app.kubernetes.io/name`）会被 OpenSearch 动态 mapping 解析成嵌套 object，与不带点的普通标签（如 `app: log-generator`）写同一字段时会类型冲突——外层 HTTP 仍返回 200，但 `_bulk` 响应体里单条文档是 `400 mapper_parsing_exception`（需开 `Trace_Error On` 才能看到，仅看连接层日志会误判为网络问题）。需在 `[OUTPUT]` 加 `Replace_Dots On`，并删除已被污染 mapping 的索引后重建。
 
 ### 6. 访问 OpenSearch Dashboards
 

@@ -254,7 +254,7 @@ cd -
 echo "代码已推送到 CodeCommit"
 ```
 
-> **已验证：** 在多 agent 共享同一台操作机 / 同一份 `~/.gitconfig` 的场景下，`git push` 可能返回 `403 Forbidden`，原因不是权限不足，而是 `~/.gitconfig` 中已存在**其他并行任务写入的全局 `credential.helper`**（例如指向另一个 AWS profile 或另一个分区的 `aws --profile xxx codecommit credential-helper`）。由于 git 对多值配置项按 `system → global → local → command line` 顺序依次尝试，本步骤命令行传入的 `-c credential.helper=...` 会被追加在全局配置之后，若全局那条已经能返回一组（错误的）用户名密码，git 就会优先使用它，导致用错身份 / 错误分区凭证而 403。**排查方法**：`git config --global --get-all credential.helper` 查看是否已有其他 helper；**修复方法**：不要修改这份共享的全局配置（会影响其他并行 agent），而是在本次 push 命令前先用一次空值清空多值列表，再追加本实验需要的 helper：
+> **注意：** 多个 agent 共享同一台操作机时，`git push` 可能因 `~/.gitconfig` 里已有其他任务写入的全局 `credential.helper` 而返回 `403`（git 会优先用先前那条，导致用错身份）。不要修改共享的全局配置，改为 push 前先用空值清空 helper 列表，再追加本次需要的 helper：
 >
 > ```bash
 > git -c credential.helper= \
@@ -285,7 +285,7 @@ echo "CodeBuild Project 已创建"
 
 ### 7. 创建 CodePipeline
 
-> **已验证：** 原文档直接复用第 2 步创建的 `CODEBUILD_ROLE_ARN`（`EKS-CodeBuild-Role`）作为 CodePipeline 的 `roleArn`，但该 Role 的信任策略只允许 `codebuild.amazonaws.com` 扮演，CodePipeline 服务（`codepipeline.amazonaws.com`）无权 AssumeRole，实测 `create-pipeline` 直接报错：`InvalidStructureException: CodePipeline is not authorized to perform AssumeRole on role ...`。CodePipeline 必须使用单独的、信任 `codepipeline.amazonaws.com` 的服务角色。已在本步骤前补充创建 `EKS-CodePipeline-Role`：
+> **注意：** `EKS-CodeBuild-Role` 的信任策略只允许 `codebuild.amazonaws.com` 扮演，不能复用给 CodePipeline（会报 `InvalidStructureException: ... not authorized to perform AssumeRole`）。CodePipeline 需要单独的、信任 `codepipeline.amazonaws.com` 的服务角色 `EKS-CodePipeline-Role`：
 >
 > ```bash
 > cat > /tmp/codepipeline-trust.json << 'EOF'

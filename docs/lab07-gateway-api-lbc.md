@@ -40,9 +40,9 @@ export GATEWAY_NS=gateway-demo
 
 ### 1. 安装或升级 AWS Load Balancer Controller
 
-> **已验证：** 原命令中的 `--set enableGatewayAPI=true` 在当前 `eks/aws-load-balancer-controller` Helm chart（实测版本 3.4.1，App Version v3.4.1）中不是有效的 values key（`helm show values eks/aws-load-balancer-controller` 中不存在该字段，设置它是静默无效的 no-op，controller 不会开启 Gateway API reconciler）。当前 chart 通过 `controllerConfig.featureGates.ALBGatewayAPI`（ALB Gateway API）和 `controllerConfig.featureGates.NLBGatewayAPI`（NLB Gateway API）两个 feature gate 控制该能力。下方命令已改为 `--set controllerConfig.featureGates.ALBGatewayAPI=true --set controllerConfig.featureGates.NLBGatewayAPI=true`。
+> **注意：** `enableGatewayAPI=true` 在当前 chart（v3.4.1）中不是有效的 values key，设置了也不生效。正确方式是 `controllerConfig.featureGates.ALBGatewayAPI=true` 和 `NLBGatewayAPI=true`（下方命令已采用）。
 >
-> **已验证（第二处）：** "LBC 已存在" 分支中的 `helm upgrade --reuse-values` 在从旧 release（未显式设置 `certManagement` 键）升级到新版 chart（实测从 3.4.0 升级到 3.4.1）时会报错 `nil pointer evaluating interface {}.defaultPCAARN`（chart 新版模板引用 `.Values.certManagement.defaultPCAARN`，而 `--reuse-values` 复用的旧 release values 中完全没有 `certManagement` 这个 key，Helm 不会用新 chart 的默认值补齐这类缺失的顶层 key）。规避方法：不使用 `--reuse-values`，改为显式传入之前生效的全部 values（`clusterName`、`region`、`vpcId`、`replicaCount`、`serviceAccount.*`）加上新增的 `controllerConfig.featureGates.*`，避免依赖增量合并。
+> **注意：** 升级已有 LBC 时不要用 `helm upgrade --reuse-values`——新版 chart 新增的顶层 key（如 `certManagement`）在旧 release 的已存 values 里不存在，会导致模板报错。改为显式传入全部关键 values（下方命令已采用）。
 
 ```bash
 LBC_PRESENT=$(kubectl get deployment aws-load-balancer-controller \
@@ -228,7 +228,7 @@ echo "测试服务已部署"
 
 ### 4. 创建 LoadBalancerConfiguration、GatewayClass、Gateway
 
-> **已验证：** `LoadBalancerConfiguration`（`gateway.k8s.aws/v1beta1`）的 CRD schema 中**没有 `spec.vpcId` 字段**（`kubectl get crd loadbalancerconfigurations.gateway.k8s.aws -o json` 查看 openAPIV3Schema 可确认，实际字段为 `scheme`/`ipAddressType`/`loadBalancerSubnets`/`securityGroups`/`tags` 等），strict decoding 会直接拒绝该请求（`unknown field "spec.vpcId"`）。VPC 由 LBC 部署时的 `--aws-vpc-id`（Helm chart `vpcId` value）决定，不需要也不能在 `LoadBalancerConfiguration` 里重复指定。下方已去掉 `vpcId` 字段（`VPC_ID` 变量仍保留用于校验/日志用途）。
+> **注意：** `LoadBalancerConfiguration` 的 CRD 里没有 `spec.vpcId` 字段，写了会被拒绝（`unknown field`）。VPC 由 LBC 部署时的 `--aws-vpc-id` 决定，无需也不能在这里重复指定（下方已去掉该字段，`VPC_ID` 变量仅用于日志展示）。
 
 ```bash
 VPC_ID=$(aws eks describe-cluster --name ${CLUSTER_NAME} \
@@ -246,7 +246,7 @@ spec:
 EOF
 ```
 
-> **已验证（关键，影响 ALB scheme）：** 原命令用 `metadata.annotations["gateway.k8s.aws/load-balancer-configuration"]` 把 `Gateway` 与 `LoadBalancerConfiguration` 关联，但实测该注解**完全不被当前版本 LBC（v3.4.1）识别**——LBC 日志中 `successfully built model` 显示生成的 ALB 模型 `scheme` 恒为 `internal`（即默认值），说明 `alb-config`（`scheme: internet-facing`）从未被引用。正确方式是通过 Gateway API v1 标准字段 `spec.infrastructure.parametersRef`（`group: gateway.k8s.aws, kind: LoadBalancerConfiguration, name: <配置名>`）绑定，这也是同集群里另一个更早创建、独立于本实验的 Gateway 对象（`test-gw`/`production` namespace）实际使用的写法，已用其反向印证。**由于 ALB 的 `Scheme` 创建后不可变更**，用注解方式先创建出的 ALB 会永久是 `internal`，必须删除 `Gateway`（连带旧 ALB 一起被 LBC 回收）后用 `infrastructure.parametersRef` 方式重新创建才能得到 `internet-facing` 的 ALB。下方已改为 `infrastructure.parametersRef` 写法，去掉了无效注解。
+> **注意（影响 ALB scheme）：** 用 `metadata.annotations["gateway.k8s.aws/load-balancer-configuration"]` 关联 `Gateway` 和 `LoadBalancerConfiguration` 对当前版本 LBC（v3.4.1）无效，ALB 会恒为默认的 `internal`。正确方式是用 `spec.infrastructure.parametersRef` 绑定（下方已采用）。由于 ALB 的 `Scheme` 创建后不可变更，若已用注解方式建出 `internal` 的 ALB，必须删除 `Gateway` 后用 `infrastructure.parametersRef` 重新创建才能得到 `internet-facing`。
 
 ```bash
 
@@ -331,7 +331,9 @@ curl -s -o /dev/null -D - --max-time 10 http://${ALB_DNS}/v1/ | grep -i '^Server
 curl -s -o /dev/null -D - --max-time 10 http://${ALB_DNS}/v2/ | grep -i '^Server:'
 ```
 
-> **已验证：** 原文档预期"两个路径均返回 200"与本 HTTPRoute 配置的实际行为不符。本实验的 `HTTPRoute` 只按 `PathPrefix` 做**转发**（无 `URLRewrite` filter 剥离前缀），ALB 会把 `/v1/`、`/v2/` 原样转发给后端容器；而 `app-v1`（`nginx`）、`app-v2`（`httpd`）镜像的默认文档根目录下并不存在 `/v1`、`/v2` 这两个路径，因此**路由正确生效时，`/v1/`、`/v2/` 实际返回的是 404**（分别来自 nginx 和 Apache 的默认 404 页面），只有 `/`（走第三条无 `matches` 的默认规则，转发到 `app-v1`）会返回 `200`。实测已用 AWS CLI 确认 ALB 监听器规则本身完全正确：`path-pattern=/v1,/v1/*` → `app-v1` 的 TargetGroup，`path-pattern=/v2,/v2/*` → `app-v2` 的 TargetGroup，且两个 TargetGroup 的全部 Target 均为 `healthy`。用响应头 `Server` 更能验证路径分流是否生效：`/v1/` 应返回 `Server: nginx/...`，`/v2/` 应返回 `Server: Apache/...`——不同的 `Server` 头证明请求确实被转发到了不同的后端应用，是本实验场景下比 HTTP 状态码更可靠的验证方式。**预期输出**：`/` 返回 `200`；`/v1`、`/v2` 返回 `404` 但 `Server` 头分别显示 `nginx` 与 `Apache`（证明路径路由生效）。若想让 `/v1`、`/v2` 也返回 `200`，需要在对应 rule 上加 `filters: [{type: URLRewrite, urlRewrite: {path: {type: ReplacePrefixMatch, replacePrefixMatch: /}}}]` 剥离前缀，这超出本实验范围。
+> **说明：** 本实验的 `HTTPRoute` 只按 `PathPrefix` 转发、不做 `URLRewrite` 剥离前缀，而 `app-v1`/`app-v2` 镜像本身没有 `/v1`、`/v2` 这两个路径，所以路由正确生效时 `/v1/`、`/v2/` 反而应该返回 404（只有 `/` 返回 200），不代表配置错误。用响应头 `Server` 区分后端更可靠：`/v1/` 应为 `nginx`，`/v2/` 应为 `Apache`。如需 `/v1`、`/v2` 也返回 200，可在对应 rule 加 `URLRewrite` filter 剥离前缀。
+
+**预期输出**：`/` 返回 `200`；`/v1`、`/v2` 返回 `404` 但 `Server` 头分别显示 `nginx` 与 `Apache`（证明路径路由生效）。
 
 ---
 

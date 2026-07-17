@@ -155,16 +155,14 @@ echo "Spark Operator 安装完成"
 
 ### 4. 提交 SparkApplication
 
-> **已验证：** 原示例镜像 `public.ecr.aws/docker/library/apache/spark-py:3.5.1-python3` 实际不存在（该仓库路径下没有这个镜像，`docker manifest inspect` 返回 `no such manifest`），且 Docker Hub 官方 `apache/spark-py` 也没有 `3.5.1` 系列 tag（最新到 `v3.4.0`）。已改用已验证可拉取的 `docker.io/apache/spark-py:v3.4.0`，并同步把 `sparkVersion` 改成 `3.4.0`。
+> **注意：** 镜像用 `docker.io/apache/spark-py:v3.4.0`（`3.5.1` 系列 tag 在该镜像仓库不存在），`sparkVersion` 需同步设为 `3.4.0`。
 
-> **已验证（2026-07-08 实测，共发现并修正 5 个真实 bug 才使作业跑通）：**
-> 1. **spark-operator 2.5.1 Helm chart 默认只监听 `default` namespace**（`spark.jobNamespaces` 默认值为 `["default"]`），第 3 步若不显式设置，SparkApplication 提交到 `spark` namespace 后 controller 永远不会 reconcile（既不报错也不创建任何 Pod，`status` 一直为空）。第 3 步 `helm upgrade --install` 命令必须加 `--set spark.jobNamespaces="{spark}"`（已同步更新到第 3 步命令块）。
-> 2. `docker.io/apache/spark-py:v3.4.0` **镜像本身不包含 hadoop-aws / aws-java-sdk-bundle 这两个 S3A 连接器 jar**（`/opt/spark/jars` 下确认没有），直接用 `s3a://` 路径会报 `ClassNotFoundException: org.apache.hadoop.fs.s3a.S3AFileSystem`。需要在 `sparkConf` 里加 `spark.jars.packages: "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.780"`（版本需与镜像自带的 `hadoop-client-*-3.3.4.jar` 匹配；`aws-java-sdk-bundle` 必须 ≥1.12.5xx，见第 4 点）。
-> 3. spark-operator controller 容器本身内置了一份 Spark 发行版并在自己的 Pod 里本地执行 `spark-submit`（含 Ivy 依赖解析），但该容器以非 root 用户运行且 `HOME=/nonexistent`，Ivy 默认缓存目录不可写，会导致 `FileNotFoundException: /nonexistent/.ivy2.5.2/cache/...`。需要额外加 `spark.jars.ivy: "/tmp/.ivy2"`（`/tmp` 在该容器内可写）指定一个可写的 Ivy 缓存路径。
-> 4. 原 `hadoopConf.fs.s3a.aws.credentials.provider: com.amazonaws.auth.WebIdentityTokenCredentialsProvider` **是为 IRSA（OIDC Web Identity 联合）设计的**，读取的是 `AWS_ROLE_ARN` / `AWS_WEB_IDENTITY_TOKEN_FILE` 环境变量；但本 Lab 用的是 **EKS Pod Identity**，Pod 里实际注入的是 `AWS_CONTAINER_CREDENTIALS_FULL_URI`（值形如 `http://169.254.170.23/v1/credentials`）和 `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`，两者机制不匹配，会导致 `NullPointerException: You must specify a value for roleArn and roleSessionName`。此外，`aws-java-sdk-bundle` 若使用 hadoop-aws 3.3.4 默认关联的旧版本（1.12.262），其内置的 `ContainerCredentialsProvider` 会因安全校验拒绝 `169.254.170.23` 这个非 `localhost/127.0.0.1` 的 Full URI 主机（`Host can only be one of [localhost, 127.0.0.1]`，这是 EKS Pod Identity 支持在 SDK v1 ~1.12.499 之后才修复的已知限制）。已修正为：`hadoopConf.fs.s3a.aws.credentials.provider: org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider`，并将 `aws-java-sdk-bundle` 版本提升到 `1.12.780`（见上）。
-> 5. `wordcount.py` 脚本本身有两处 bug：① 用的是 `s3://` scheme，但集群只注册了 `s3a://`（S3AFileSystem），必须统一改成 `s3a://`；② `spark.read.csv(..., header=True)` 不加 `inferSchema=True` 时所有列（含 `value`）都是 string 类型，`.sum("value")` 会报 `AnalysisException: "value" is not a numeric column`。已修正脚本为 `s3a://` + `inferSchema=True`（步骤 1 的脚本生成命令块已同步更新）。
->
-> 另外，本 Lab 共享的 `demo` 集群上 `aws-load-balancer-controller`（非本 Lab 资源）曾因其他并发 Lab 触发的 Gateway API TLSRoute CRD 问题间歇性 CrashLoopBackOff，导致其 `mservice.elbv2.k8s.aws` Service 准入 Webhook 短暂无可用 endpoint，使 `spark-submit` 创建 driver headless Service 时报 `no endpoints available for service "aws-load-balancer-webhook-service"`。这是共享集群上与 Spark 无关的瞬时抖动，未修改该组件，实测重试提交（删除并重新 apply SparkApplication）即可绕过。
+> **注意（以下 5 处已在下方命令中修正）：**
+> 1. spark-operator chart 默认只监听 `default` namespace，提交到 `spark` namespace 需加 `--set spark.jobNamespaces="{spark}"`，否则 controller 不会 reconcile
+> 2. 镜像不含 `hadoop-aws`/`aws-java-sdk-bundle` 这两个 S3A 连接器 jar，需在 `sparkConf` 加 `spark.jars.packages` 显式引入
+> 3. controller 容器以非 root 用户运行，Ivy 默认缓存目录不可写，需加 `spark.jars.ivy: "/tmp/.ivy2"`
+> 4. `WebIdentityTokenCredentialsProvider` 是给 IRSA 设计的，本 Lab 用 Pod Identity，需改用 `IAMInstanceCredentialsProvider`，且 `aws-java-sdk-bundle` 需 ≥1.12.780（旧版本会拒绝 Pod Identity 的凭证 Full URI 主机）
+> 5. `wordcount.py` 需用 `s3a://`（而非 `s3://`）并加 `inferSchema=True`，否则 `.sum("value")` 会因列类型报错
 
 ```bash
 kubectl apply -n spark -f - <<EOF
@@ -219,9 +217,9 @@ aws s3 ls s3://${SPARK_BUCKET}/output/ 2>/dev/null || echo "等待输出写入..
 
 ### 5. 创建 EMR on EKS Virtual Cluster
 
-> **已验证：** 原文档只调用了 `aws emr-containers update-role-trust-policy`（这只是给 Job Execution Role 补 trust policy，用于*运行作业*时的权限），但 `create-virtual-cluster` 本身还需要 EMR containers 的**集群级 service-linked role**（`AWSServiceRoleForAmazonEMRContainers`）在目标 namespace 里有 Kubernetes RBAC 权限（Role + RoleBinding），否则会直接报错 `ValidationException: Required resource spark not found on the cluster`。必须先执行 `eksctl create iamidentitymapping --cluster ${CLUSTER_NAME} --namespace spark --service-name "emr-containers" --region ${AWS_REGION}`（eksctl 内置了对 `emr-containers` service-name 的支持，会自动创建对应的 Role/RoleBinding 并把 `AWSServiceRoleForAmazonEMRContainers` 加入 aws-auth ConfigMap），再调用 `create-virtual-cluster` 才能成功。已在下方命令块中补充该步骤。
+> **注意：** `create-virtual-cluster` 除了 Job Execution Role 的 trust policy 外，还需要 EMR containers 的集群级 service-linked role 在目标 namespace 有 RBAC 权限，否则报 `ValidationException: Required resource spark not found on the cluster`。需先执行 `eksctl create iamidentitymapping --service-name "emr-containers"`（下方命令已包含）。
 >
-> **已验证（2026-07-16）：** `EMRonEKS-JobRole` 除 `AmazonS3ReadOnlyAccess` 外还需要额外的 `s3:PutObject`/`s3:DeleteObject` 权限（第 6 步作业需要写输出且 `mode("overwrite")` 会先删除已存在的旧文件），否则第 6 步会在写输出阶段报 `AccessDenied`。已在下方命令块中补充 `EMRonEKS-S3Write` 内联策略。
+> **注意：** `EMRonEKS-JobRole` 除 `AmazonS3ReadOnlyAccess` 外还需要 `s3:PutObject`/`s3:DeleteObject`（`overwrite` 模式写输出前会先删除旧文件），已在下方补充 `EMRonEKS-S3Write` 内联策略。
 
 ```bash
 eksctl create iamidentitymapping \
@@ -297,11 +295,11 @@ echo "EMR Virtual Cluster RUNNING"
 
 ### 6. 提交 EMR Spark 作业
 
-> **已解决（2026-07-16，独立集群完整重跑验证）：** 此前（2026-07-08 首次 + 2026-07-15 两次局部重测）记录的"EMR 内置 AWS SDK v2 客户端稳定 403、疑似账号级安全基线限制"这一假设，在共享集群上三次尝试全部因环境抖动（网络/调度/CNI IP 耗尽）败在更早阶段，**从未真正验证过**。本次在完全独立、无并发干扰的集群上完整重跑，作业顺利跑到访问 S3 的阶段，实际暴露的是两个可直接修复的真实问题（均已在下方命令块和第 5 步中修正），与 SDK v2/账号安全基线无关：
-> 1. **默认 S3A 凭证提供链不含 IRSA 解析器**：不显式指定时，100% 复现 `NoAuthWithAWSException: No AWS Credentials provided by TemporaryAWSCredentialsProvider SimpleAWSCredentialsProvider EnvironmentVariableCredentialsProvider IAMInstanceCredentialsProvider`（完全无凭证，不是被拒绝）。原因：EMR-on-EKS 走 **IRSA**（`AssumeRoleWithWebIdentity`，区别于第 4 步 SparkApplication 用的 Pod Identity），但 hadoop-aws 默认凭证链不含任何能读取 `AWS_WEB_IDENTITY_TOKEN_FILE`/`AWS_ROLE_ARN` 的 Provider。必须在 `sparkSubmitParameters` 显式加 `--conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.WebIdentityTokenCredentialsProvider`（已在下方命令块加入）。
-> 2. **Job Role 只读权限无法覆盖已存在的输出文件**：修完凭证问题后作业完整跑通读取+计算+写入，最后败在 `output/` 目录 `overwrite` 模式需要先删除旧文件，`AmazonS3ReadOnlyAccess` 不含 `s3:DeleteObject`（已在第 5 步补充 `EMRonEKS-S3Write` 内联策略解决）。
+> **注意（以下 2 处已在下方修正）：**
+> 1. EMR-on-EKS 走 IRSA（区别于第 4 步 SparkApplication 用的 Pod Identity），hadoop-aws 默认凭证链不含 IRSA 解析器，需在 `sparkSubmitParameters` 显式加 `--conf spark.hadoop.fs.s3a.aws.credentials.provider=com.amazonaws.auth.WebIdentityTokenCredentialsProvider`，否则报 `NoAuthWithAWSException`
+> 2. `AmazonS3ReadOnlyAccess` 不含 `s3:DeleteObject`，`output/` 的 `overwrite` 模式会因无法删除旧文件而失败（已在第 5 步补充 `EMRonEKS-S3Write` 策略）
 >
-> 建议排查此类问题时给 Job Role 加 CloudWatch 日志（`logs:CreateLogGroup/CreateLogStream/PutLogEvents/DescribeLogStreams/DescribeLogGroups`）并在 `start-job-run` 加 `configuration-overrides.monitoringConfiguration.cloudWatchMonitoringConfiguration`——EMR job-runner/driver Pod 失败后清理极快（数秒到数十秒），不开日志基本看不到真实报错。详细排查过程见 `execution-records/execution-log-lab06.md` 中「Lab06 全新独立集群完整重跑（2026-07-16）」一节。
+> 排查建议：给 Job Role 加 CloudWatch 日志权限并在 `start-job-run` 开启日志配置——EMR 失败的 job-runner/driver Pod 清理很快，不开日志基本看不到真实报错。
 
 ```bash
 EMR_JOB_ID=$(aws emr-containers start-job-run \

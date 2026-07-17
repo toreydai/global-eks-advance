@@ -161,7 +161,7 @@ echo "S3 和 Pod Identity 已配置"
 
 ### 5. 部署 vLLM 推理服务
 
-> **已验证：** **实测复现一个导致 vLLM 容器持续 CrashLoopBackOff 的真实 Bug**：Kubernetes 会为命名空间内每个 Service 自动注入 `<SERVICE名大写>_PORT`/`_SERVICE_HOST` 等服务发现环境变量到同命名空间新建的 Pod 中。由于本例的 Service 名字正好是 `vllm`，注入的环境变量 `VLLM_PORT=tcp://<ClusterIP>:8000` 与 vLLM 引擎自身读取的同名环境变量 `VLLM_PORT`（期望是纯整数端口号）发生冲突，导致 vLLM 报错 `ValueError: VLLM_PORT 'tcp://...' appears to be a URI` 后引擎初始化失败、容器崩溃重启。已在 Pod spec 中加入 `enableServiceLinks: false` 关闭该自动注入机制，问题解决。**排查建议**：任何应用自身环境变量名与其 K8s Service 名恰好同名/同前缀时都可能踩到这个坑（vLLM、Ray、Triton 等均有已知案例），根治方式二选一：Service 改名避开冲突，或在 Pod spec 加 `enableServiceLinks: false`。
+> **注意：** Service 名字若与应用自身读取的环境变量同名（本例 `vllm`），K8s 自动注入的 `VLLM_PORT=tcp://...` 会和 vLLM 期望的纯整数端口冲突，导致 `ValueError: VLLM_PORT ... appears to be a URI` 崩溃。需在 Pod spec 加 `enableServiceLinks: false` 关闭该自动注入（Ray、Triton 等同类应用也有此坑）。
 
 ```bash
 kubectl apply -n ${GENAI_NS} -f - <<'EOF'

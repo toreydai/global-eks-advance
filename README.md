@@ -35,6 +35,12 @@
 
 ---
 
+## 与中国区版本（china-eks-advance）的关系
+
+中国区对应版本见 [`china-eks-advance`](https://github.com/toreydai/china-eks-advance)，覆盖同一批 Lab，按中国区约束做了适配（`arn:aws-cn:` ARN、`.amazonaws.com.cn` ECR 域名、镜像统一转存私有 ECR、安全组禁止 `0.0.0.0/0` 等），且中国区 Bedrock 不可用故无 Lab04。
+
+---
+
 ## 使用方式
 
 1. 在此目录下打开 Claude Code，`CLAUDE.md` 自动加载全球区 EKS Advance 配置

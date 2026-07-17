@@ -239,7 +239,7 @@ echo "AI Agent 已部署（2 副本）"
 
 **预期输出**：打印"AI Agent 已部署（2 副本）"
 
-> **已验证：** 原示例代码里 `/identity` 探测的是经典 EC2 IMDS 地址 `169.254.169.254/latest/meta-data/iam/security-credentials/`，这与 EKS Pod Identity 无关——Pod Identity 通过环境变量 `AWS_CONTAINER_CREDENTIALS_FULL_URI`（实测指向 `169.254.170.23/v1/credentials`）+ 挂载的 token 文件 `/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token` 提供临时凭证，走的是 EKS Pod Identity Agent 而非传统 IMDS，因此原代码无论 Pod Identity 是否配置成功，`/identity` 永远返回 `Identity check done`，不会返回 `Pod Identity OK`，无法达成实验预期输出。已将示例代码改为读取 token 文件并携带 `Authorization` 头请求 `AWS_CONTAINER_CREDENTIALS_FULL_URI`，实测能正确拿到临时凭证并返回 `Pod Identity OK`。
+> **注意：** `/identity` 不能探测传统 EC2 IMDS 地址（`169.254.169.254`），那与 EKS Pod Identity 无关。Pod Identity 走的是环境变量 `AWS_CONTAINER_CREDENTIALS_FULL_URI`（`169.254.170.23/v1/credentials`）+ 挂载的 token 文件，下方代码已改为读取 token 文件并携带该地址请求凭证，返回 `Pod Identity OK`。
 
 ### 7. 验证 Pod Identity 和健康检查
 

@@ -60,9 +60,9 @@ echo "Kubecost 安装完成"
 
 **预期输出**：打印"Kubecost 安装完成"
 
-> **已验证：** 原命令未指定 `--version`，实测会拉到当前 `kubecost/cost-analyzer` 最新的 2.9.6（chart 内部标注为"2.9.x is only used for preparing agents to upgrade to 3.0"的过渡版本）。该版本的 Helm 模板在渲染阶段强制要求 `.Values.global.clusterId` 必须与 `.Values.prometheus.server.global.external_labels.cluster_id` 相等，紧接着还要求配置 `global federated store`（面向 Kubecost 3.0 的多集群联邦存储架构），单机 demo 场景下无法用简单的 `--set kubecostToken=...` 一步装完，会连续报 `Error: execution error ... clusterId is required` → `cluster_id is set in two places` → `Missing global federated-store`。已改为显式 `--version 2.8.6`（最后一个按传统单集群模式独立安装、不强制联邦存储配置的稳定版本）规避该问题。
+> **注意：** 不指定 `--version` 会拉到 `kubecost/cost-analyzer` 2.9.x（面向 3.0 联邦存储架构的过渡版本），单机 demo 场景下会连续报 `clusterId is required`/`Missing global federated-store` 等错误。已改为显式 `--version 2.8.6`（最后一个独立单集群模式的稳定版本）。
 >
-> **已验证：** 集群 `demo` 上没有标记为 `(default)` 的 StorageClass（仅有 `ebs-sc` / `efs-sc` / `gp2`，均为非默认），而 chart 默认给 `cost-analyzer` 和 `prometheus-server` 的 PVC 都不设置 `storageClassName`（对应 `<unset>`），导致 PVC 一直 `Pending`（`no persistent volumes available for this claim and no storage class is set`），下游 Pod 也随之 `Pending` 直至 `helm --wait` 超时（`Error: context deadline exceeded`）。已通过 `--set persistentVolume.storageClass=ebs-sc`、`--set prometheus.server.persistentVolume.storageClass=ebs-sc`、`--set prometheus.alertmanager.persistentVolume.storageClass=ebs-sc` 显式指定 EBS CSI StorageClass 解决。若后续把 `ebs-sc` 设为集群默认 StorageClass，可省略这三个 `--set`。
+> **注意：** 集群没有标记 `(default)` 的 StorageClass，chart 默认不给 PVC 设置 `storageClassName`，会导致 PVC 一直 `Pending` 直至 `helm --wait` 超时。已通过 `--set persistentVolume.storageClass=ebs-sc` 等三处显式指定 EBS CSI StorageClass；若后续把 `ebs-sc` 设为集群默认，可省略这些 `--set`。
 >
 > **已验证（多 agent 并发安全）：** 若操作机上同时存在多个集群的 kubeconfig context（例如与其他 Lab 并行执行），执行 `aws eks update-kubeconfig` 会覆盖 `~/.kube/config` 的 `current-context`。本实验所有 `kubectl`/`helm` 命令都应显式带 `--context <本实验集群 context>`（helm 对应 `--kube-context`），不要依赖 current-context，避免误操作到其他并行任务正在使用的集群或资源。
 
