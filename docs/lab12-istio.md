@@ -317,3 +317,9 @@ sleep 30
 
 echo "清理完成"
 ```
+
+---
+
+## 进阶：多集群 Istio（Primary-Remote）
+
+本实验为单集群内的 Istio 服务网格演示。若需要验证 **Istio primary-remote 多集群模式**（跨集群服务发现与流量互通，两个独立 EKS 集群），可参考补充素材：[`lab12-assets/multi-cluster/`](lab12-assets/multi-cluster/)，内含独立的部署脚本、CloudFormation/eksctl 配置和架构文档，与本 Lab 相互独立、不共用集群。
